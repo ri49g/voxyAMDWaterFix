@@ -18,7 +18,6 @@ import org.lwjgl.opengl.GL30;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 
-import static org.lwjgl.opengl.GL11.GL_DEPTH_BUFFER_BIT;
 import static org.lwjgl.opengl.GL30C.*;
 import static org.lwjgl.opengl.GL31.GL_UNIFORM_BUFFER;
 import static org.lwjgl.opengl.GL45C.*;
@@ -26,7 +25,10 @@ import static org.lwjgl.opengl.GL45C.*;
 public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     private final IrisVoxyRenderPipelineData data;
     private final FullscreenBlit depthBlit = new FullscreenBlit("voxy:post/blit_texture_depth_cutout.frag");
-    public final DepthFramebuffer fbTranslucent = new DepthFramebuffer(this.fb.getFormat());
+    // The translucent pass only needs a depth texture. Keeping a stencil attachment here forces us to
+    // copy stencil state from the opaque framebuffer, which is exactly the path that misbehaves on
+    // AMD drivers when shaders are enabled.
+    public final DepthFramebuffer fbTranslucent = new DepthFramebuffer();
 
     private final GlBuffer shaderUniforms;
 
@@ -121,17 +123,19 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
 
     @Override
     protected void postOpaquePreTranslucent(Viewport<?> viewport) {
-        int msk = GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT;
         if (true) {//TODO: make shader specified
             if (false) {//TODO: only do this if shader specifies
                 glBindFramebuffer(GL_FRAMEBUFFER, this.fbTranslucent.framebuffer.id);
                 glClearColor(0, 0, 0, 0);
                 glClear(GL_COLOR_BUFFER_BIT);
             }
-        } else {
-            msk |= GL_COLOR_BUFFER_BIT;
         }
-        glBlitNamedFramebuffer(this.fb.framebuffer.id, this.fbTranslucent.framebuffer.id, 0,0, viewport.width, viewport.height, 0,0, viewport.width, viewport.height, msk, GL_NEAREST);
+
+        // Copy the resolved opaque depth into the translucent pass with the same shader path used for
+        // the initial vanilla depth import. This avoids the driver-sensitive depth/stencil blit and
+        // lets translucency rely on depth testing alone instead of a copied stencil mask.
+        this.copyDepthTexture(this.fb.getDepthTex().id, this.fbTranslucent.framebuffer.id,
+                viewport.width, viewport.height, viewport.width, viewport.height);
     }
 
     @Override
@@ -184,6 +188,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
         if (this.data.getBlender() != null) {
             this.data.getBlender().run();
         }
+        glDisable(GL_STENCIL_TEST);
     }
 
     @Override

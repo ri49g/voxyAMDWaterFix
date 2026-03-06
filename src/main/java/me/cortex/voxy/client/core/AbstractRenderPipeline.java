@@ -30,6 +30,7 @@ import static org.lwjgl.opengl.GL11C.GL_STENCIL_TEST;
 import static org.lwjgl.opengl.GL11C.glColorMask;
 import static org.lwjgl.opengl.GL11C.glDisable;
 import static org.lwjgl.opengl.GL11C.glEnable;
+import static org.lwjgl.opengl.GL11C.glDepthMask;
 import static org.lwjgl.opengl.GL11C.glStencilFunc;
 import static org.lwjgl.opengl.GL11C.glStencilMask;
 import static org.lwjgl.opengl.GL11C.glStencilOp;
@@ -129,19 +130,30 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         glBindFramebuffer(GL_FRAMEBUFFER, sourceFrameBuffer);
     }
 
+    protected final void copyDepthTexture(int sourceDepthTexture, int targetFb, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight) {
+        glDisable(GL_STENCIL_TEST);
+        glBindFramebuffer(GL_FRAMEBUFFER, targetFb);
+
+        this.depthCopy.bind();
+        glBindTextureUnit(0, sourceDepthTexture);
+        glBindSampler(0, DEPTH_SAMPLER);
+        glUniform2f(1, ((float) targetWidth) / sourceWidth, ((float) targetHeight) / sourceHeight);
+
+        glColorMask(false, false, false, false);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(true);
+        glDepthFunc(GL_ALWAYS);
+        this.depthCopy.blit();
+        glDepthFunc(GL_LEQUAL);
+        glColorMask(true, true, true, true);
+    }
+
     protected void initDepthStencil(int sourceFrameBuffer, int targetFb, int srcWidth, int srcHeight, int width, int height) {
         glClearNamedFramebufferfi(targetFb, GL_DEPTH_STENCIL, 0, 1.0f, 1);
         // using blit to copy depth from mismatched depth formats is not portable so instead a full screen pass is performed for a depth copy
         // the mismatched formats in this case is the d32 to d24s8
-        glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFb);
-
-        this.depthCopy.bind();
         int depthTexture = glGetNamedFramebufferAttachmentParameteri(sourceFrameBuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
-        glBindTextureUnit(0, depthTexture);
-        glBindSampler(0, DEPTH_SAMPLER);
-        glUniform2f(1,((float)width)/srcWidth, ((float)height)/srcHeight);
-        glColorMask(false,false,false,false);
-        this.depthCopy.blit();
+        this.copyDepthTexture(depthTexture, targetFb, srcWidth, srcHeight, width, height);
 
         /*
         if (Capabilities.INSTANCE.isMesa){
@@ -152,6 +164,12 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         //This whole thing is hell, we basicly want to create a mask stenicel/depth mask specificiclly
         // in theory we could do this in a single pass by passing in the depth buffer from the sourceFrambuffer
         // but the current implmentation does a 2 pass system
+
+        // Disable colour writes during the stencil/depth masking passes. The noop and depth0
+        // fragment shaders output a dummy colour (magenta) that must NOT reach the Iris gbuffer
+        // colour attachments -- otherwise vanilla terrain gets overwritten with garbage.
+        glColorMask(false, false, false, false);
+
         glEnable(GL_STENCIL_TEST);
         glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
         glStencilFunc(GL_ALWAYS, 0, 0xFF);
